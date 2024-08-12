@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace HW_Async_Thread
@@ -9,25 +10,40 @@ namespace HW_Async_Thread
         public static async Task Main()
         {
             // 测试用例: (a + b) + (c + d)
-            ValueExpr a = new(1);
-            ValueExpr b = new(2);
-            ValueExpr c = new(3);
-            ValueExpr d = new(4);
-            AddExpr add1 = new(a, b);
-            AddExpr add2 = new(c, d);
-            AddExpr add3 = new(add1, add2);
-            Console.WriteLine(add3.Val);
+            ValueExpr a = new ValueExpr(1);
+            ValueExpr b = new ValueExpr(2);
+            ValueExpr c = new ValueExpr(3);
+            ValueExpr d = new ValueExpr(4);
+            AddExpr add1 = new AddExpr(a, b);
+            AddExpr add2 = new AddExpr(c, d);
+            AddExpr add3 = new AddExpr(add1, add2);
+
+
+            Console.WriteLine(await add3.Val); 
+
             a.NewVal = 5;
             await add3.Update(); 
-            Console.WriteLine(add3.Val);
+
+          
+            Console.WriteLine(await add3.Val); 
         }
     }
 
     public abstract class Expr
     {
-        protected List<Expr> parents = new List<Expr>();
+        protected readonly List<Expr> parents = new List<Expr>();
+        private readonly SemaphoreSlim semaphore = new SemaphoreSlim(1, 1);
+        protected bool isDirty = true;
 
-        public abstract int Val { get; }
+        public abstract Task<int> GetValAsync();
+
+        public Task<int> Val
+        {
+            get
+            {
+                return GetValAsync();
+            }
+        }
 
         public abstract Task Update();
 
@@ -37,7 +53,20 @@ namespace HW_Async_Thread
         {
             foreach (var parent in parents)
             {
-                _ = parent.Update(); 
+                _ = parent.Update();
+            }
+        }
+
+        protected async Task WaitForUpdate()
+        {
+            await semaphore.WaitAsync();
+            try
+            {
+                await Update();
+            }
+            finally
+            {
+                semaphore.Release();
             }
         }
     }
@@ -45,18 +74,15 @@ namespace HW_Async_Thread
     public class ValueExpr : Expr
     {
         private int val;
-        private bool isDirty = true;
 
-        public override int Val
+        public ValueExpr(int initVal)
         {
-            get
-            {
-                if (isDirty)
-                {
-                    throw new InvalidOperationException("Value is not up-to-date.");
-                }
-                return val;
-            }
+            val = initVal;
+        }
+
+        public override Task<int> GetValAsync()
+        {
+            return Task.FromResult(val);
         }
 
         public int NewVal
@@ -66,22 +92,14 @@ namespace HW_Async_Thread
                 if (val != value)
                 {
                     val = value;
-                    isDirty = true;
                     NotifyParents();
                 }
             }
         }
 
-        public ValueExpr(int initVal)
+        public override Task Update()
         {
-            val = initVal;
-            isDirty = false;
-        }
-
-        public override async Task Update()
-        {
-            isDirty = false;
-            await Task.CompletedTask;
+            return Task.CompletedTask;
         }
 
         public override void Register(Expr parent)
@@ -93,21 +111,8 @@ namespace HW_Async_Thread
     public class AddExpr : Expr
     {
         private int val;
-        private bool isDirty = true;
         private readonly Expr exprA;
         private readonly Expr exprB;
-
-        public override int Val
-        {
-            get
-            {
-                if (isDirty)
-                {
-                    throw new InvalidOperationException("Value is not up-to-date.");
-                }
-                return val;
-            }
-        }
 
         public AddExpr(Expr A, Expr B)
         {
@@ -117,11 +122,21 @@ namespace HW_Async_Thread
             B.Register(this);
         }
 
+        public override async Task<int> GetValAsync()
+        {
+            if (isDirty)
+            {
+                await WaitForUpdate();
+            }
+            return val;
+        }
+
         public override async Task Update()
         {
-            val = exprA.Val + exprB.Val;
+            await Task.WhenAll(exprA.GetValAsync(), exprB.GetValAsync());
+            val = await exprA.GetValAsync() + await exprB.GetValAsync();
             isDirty = false;
-            await Task.CompletedTask;
+            NotifyParents();
         }
 
         public override void Register(Expr parent)
@@ -130,4 +145,5 @@ namespace HW_Async_Thread
         }
     }
 }
+
 
